@@ -39,6 +39,14 @@ static int trace_enqueue(u32 tgid, u32 pid)
 	return 0;
 }
 
+struct task_struct___o {
+	volatile long int state;
+} __attribute__((preserve_access_index));
+
+struct task_struct___x {
+	unsigned int __state;
+} __attribute__((preserve_access_index));
+
 static __always_inline __s64 get_task_state(void *task)
 {
 	struct task_struct___x *t = task;
