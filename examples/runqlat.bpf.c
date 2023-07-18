@@ -33,12 +33,19 @@ static int trace_enqueue(u32 tgid, u32 pid)
 
 	if (!pid)
 		return 0;
-	if (targ_tgid && targ_tgid != tgid)
-		return 0;
 
 	ts = bpf_ktime_get_ns();
 	bpf_map_update_elem(&start, &pid, &ts, BPF_ANY);
 	return 0;
+}
+
+static __always_inline __s64 get_task_state(void *task)
+{
+	struct task_struct___x *t = task;
+
+	if (bpf_core_field_exists(t->__state))
+		return BPF_CORE_READ(t, __state);
+	return BPF_CORE_READ((struct task_struct___o *)task, state);
 }
 
 static int handle_switch(bool preempt, struct task_struct *prev, struct task_struct *next)
@@ -68,7 +75,7 @@ static int handle_switch(bool preempt, struct task_struct *prev, struct task_str
 	
     increment_map(&runq_latency_seconds, &slot, 1);
 
-    latency_slot = MAX_LATENCY_SLOT + 1;
+    slot = MAX_LATENCY_SLOT + 1;
     increment_map(&runq_latency_seconds, &slot, delta);
 
 cleanup:
@@ -79,18 +86,12 @@ cleanup:
 SEC("tp_btf/sched_wakeup")
 int BPF_PROG(sched_wakeup, struct task_struct *p)
 {
-	if (filter_cg && !bpf_current_task_under_cgroup(&cgroup_map, 0))
-		return 0;
-
 	return trace_enqueue(p->tgid, p->pid);
 }
 
 SEC("tp_btf/sched_wakeup_new")
 int BPF_PROG(sched_wakeup_new, struct task_struct *p)
 {
-	if (filter_cg && !bpf_current_task_under_cgroup(&cgroup_map, 0))
-		return 0;
-
 	return trace_enqueue(p->tgid, p->pid);
 }
 
@@ -103,18 +104,12 @@ int BPF_PROG(sched_switch, bool preempt, struct task_struct *prev, struct task_s
 SEC("raw_tp/sched_wakeup")
 int BPF_PROG(handle_sched_wakeup, struct task_struct *p)
 {
-	if (filter_cg && !bpf_current_task_under_cgroup(&cgroup_map, 0))
-		return 0;
-
 	return trace_enqueue(BPF_CORE_READ(p, tgid), BPF_CORE_READ(p, pid));
 }
 
 SEC("raw_tp/sched_wakeup_new")
 int BPF_PROG(handle_sched_wakeup_new, struct task_struct *p)
 {
-	if (filter_cg && !bpf_current_task_under_cgroup(&cgroup_map, 0))
-		return 0;
-
 	return trace_enqueue(BPF_CORE_READ(p, tgid), BPF_CORE_READ(p, pid));
 }
 
