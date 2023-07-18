@@ -6,7 +6,6 @@
 #include <bpf/bpf_tracing.h>
 #include "bits.bpf.h"
 #include "maps.bpf.h"
-#include "core_fixes.bpf.h"
 
 #define MAX_ENTRIES	10240
 #define TASK_RUNNING 	0
