@@ -11,11 +11,12 @@ import (
 
 // Config describes how to configure and extract metrics
 type Config struct {
-	Name       string      `yaml:"name"`
-	Metrics    Metrics     `yaml:"metrics"`
-	PerfEvents []PerfEvent `yaml:"perf_events"`
-	Kaddrs     []string    `yaml:"kaddrs"`
-	BPFPath    string
+	Name               string      `yaml:"name"`
+	Metrics            Metrics     `yaml:"metrics"`
+	PerfEvents         []PerfEvent `yaml:"perf_events"`
+	Kaddrs             []string    `yaml:"kaddrs"`
+	BPFPath            string
+	SupportsContainers bool `yaml:"supports_containers"`
 }
 
 // PerfEvent describes perf_event to attach to

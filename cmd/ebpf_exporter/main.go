@@ -41,6 +41,57 @@ func main() {
 		log.Fatalf("Error parsing configs: %v", err)
 	}
 
+	// // define an empty list of PIDs
+	// var pids []uint32
+
+	// // if containerIds is not empty, then we need to get the PID of the container
+	// if *containerIds != "" {
+	// 	// Create a Docker client.
+	// 	dockerClient, err := client.NewClientWithOpts(client.FromEnv)
+	// 	if err != nil {
+	// 		panic(err.Error())
+	// 	}
+
+	// 	// parse comma separated container ids into a list
+	// 	containerIDs := strings.Split(*containerIds, ",")
+	// 	// iterate over containers
+	// 	for _, containerID := range containerIDs {
+	// 		// skip if container id does not have prefix "docker://"
+	// 		if !strings.HasPrefix(containerID, "docker://") {
+	// 			fmt.Printf("Container ID %s does not have prefix 'docker://', skipping\n", containerID)
+	// 			continue
+	// 		}
+	// 		// Remove the "docker://" prefix from the container id
+	// 		containerID = strings.TrimPrefix(containerID, "docker://")
+	// 		containerJSON, err := dockerClient.ContainerInspect(context.Background(), containerID)
+	// 		if err != nil {
+	// 			panic(err.Error())
+	// 		}
+	// 		// The PID is stored in the State.Pid field of the container details.
+	// 		fmt.Printf("PID for container %s: %d\n", containerID, containerJSON.State.Pid)
+	// 		// append the PID to the list of PIDs
+	// 		pids = append(pids, uint32(containerJSON.State.Pid))
+	// 	}
+	// 	// log warning if no PIDs were found
+	// 	if len(pids) == 0 {
+	// 		log.Printf("No PIDs found for container IDs %s", *containerIds)
+
+	// 		// remove from configs any programs that support container IDs but no PIDs were found
+	// 		newConfigs := []config.Config{}
+	// 		for _, config := range configs {
+	// 			if config.SupportsContainerIDs {
+	// 				log.Printf("Removing config %s because it container IDs were provided but no PIDs were found", config.Name)
+	// 			} else {
+	// 				newConfigs = append(newConfigs, config)
+	// 			}
+	// 		}
+	// 		configs = newConfigs
+	// 	}
+	// 	for _, config := range configs {
+	// 		config.PIDs = pids
+	// 	}
+	// }
+
 	e, err := exporter.New(configs)
 	if err != nil {
 		log.Fatalf("Error creating exporter: %s", err)

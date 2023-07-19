@@ -3,6 +3,7 @@ package exporter
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,12 +11,15 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/aquasecurity/libbpfgo"
 	"github.com/cloudflare/ebpf_exporter/v2/config"
 	"github.com/cloudflare/ebpf_exporter/v2/decoder"
 	"github.com/cloudflare/ebpf_exporter/v2/util"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -42,6 +46,7 @@ type Exporter struct {
 	attachedProgs            map[string]map[*libbpfgo.BPFProg]bool
 	descs                    map[string]map[string]*prometheus.Desc
 	decoders                 *decoder.Set
+	pidModules               []*libbpfgo.Module
 }
 
 // New creates a new exporter with the provided config
@@ -129,6 +134,23 @@ func (e *Exporter) Attach() error {
 			return fmt.Errorf("error loading bpf object from %q for config %q: %v", cfg.BPFPath, cfg.Name, err)
 		}
 
+		if cfg.SupportsContainers {
+			e.pidModules = append(e.pidModules, module)
+
+			// // inject pids into bpf program
+			// pidMap, err := module.GetMap("pid_map")
+			// if err != nil {
+			// 	return fmt.Errorf("error retrieving pid_map: %v", err)
+			// }
+			// for i, pid := range cfg.PIDs {
+			// 	index := uint32(i)
+			// 	err = pidMap.Update(unsafe.Pointer(&index), unsafe.Pointer(&pid))
+			// 	if err != nil {
+			// 		return fmt.Errorf("error updating pid_map: %v", err)
+			// 	}
+			// }
+		}
+
 		attachments, err := attachModule(module, cfg)
 		if err != nil {
 			return fmt.Errorf("failed to attach to config %q: %s", cfg.Name, err)
@@ -138,9 +160,49 @@ func (e *Exporter) Attach() error {
 		e.modules[cfg.Name] = module
 	}
 
+	if len(e.pidModules) > 0 {
+		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		if err != nil {
+			return fmt.Errorf("Cannot initialize docker client: %v", err)
+		}
+		go e.refreshPIDs(cli)
+	}
+
 	postAttachMark()
 
 	return nil
+}
+
+func (e *Exporter) refreshPIDs(cli *client.Client) {
+	// get list of running docker containers and print their info every 5 seconds
+	for {
+		var containerInfos []types.ContainerJSON
+
+		containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
+		if err != nil {
+			log.Printf("Error getting container list: %v", err)
+		}
+		// iterate over containers
+		for _, container := range containers {
+			// get container info
+			containerInfo, err := cli.ContainerInspect(context.Background(), container.ID)
+			if err != nil {
+				log.Printf("Error getting container info: %v", err)
+			}
+			// log entire container info
+			log.Printf("Container info: %v", containerInfo)
+			if containerInfo.State.Running {
+				containerInfos = append(containerInfos, containerInfo)
+			}
+		}
+		log.Printf("Number of running containers: %d", len(containerInfos))
+		// iterate over container infos
+		for _, containerInfo := range containerInfos {
+			// The PID is stored in the State.Pid field of the container details.
+			log.Printf("Name: %s, id: %s, PID: %d\n", containerInfo.Name, containerInfo.ID, containerInfo.State.Pid)
+		}
+		time.Sleep(30 * time.Second)
+	}
 }
 
 func (e *Exporter) passKaddrs(module *libbpfgo.Module, cfg config.Config) error {

@@ -1,3 +1,4 @@
+supports_containers: true
 metrics:
   histograms:
     - name: runq_latency_seconds
