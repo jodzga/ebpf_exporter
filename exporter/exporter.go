@@ -358,7 +358,12 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 			labelNames := []string{}
 
 			for _, label := range labels {
-				labelNames = append(labelNames, label.Name)
+				// if label is "pid" then we need to add "container_name", "pod_name", "namespace"
+				if label.Name == "pid" {
+					labelNames = append(labelNames, "container_name", "pod_name", "namespace")
+				} else {
+					labelNames = append(labelNames, label.Name)
+				}
 			}
 
 			e.descs[programName][name] = prometheus.NewDesc(prometheus.BuildFQName(prometheusNamespace, "", name), help, labelNames, nil)
@@ -473,6 +478,34 @@ func (e *Exporter) collectHistograms(ch chan<- prometheus.Metric) {
 				log.Printf("Error getting map %q values for metric %q of config %q: %s", histogram.Name, histogram.Name, cfg.Name, err)
 				continue
 			}
+
+			// for each mapvalue, iterate over the labels and where the label is "pid" then replace it with the container name
+			newMapValues := []metricValue{}
+			for _, mapValue := range mapValues {
+				newLabels := []string{}
+				for i, label := range histogram.Labels {
+					if label.Name == "pid" {
+						// convert the mapValue.labels[i] to uint32
+						pid, err := strconv.ParseUint(mapValue.labels[i], 10, 32)
+						if err != nil {
+							log.Printf("Error converting pid to uint32: %v", err)
+							skip = true
+							break
+						}
+						// append valies for "container_name", "pod_name", "namespace"
+						newLabels = append(newLabels, (*e.containerPIDs)[uint32(pid)].ContainerName)
+						newLabels = append(newLabels, (*e.containerPIDs)[uint32(pid)].PodName)
+						newLabels = append(newLabels, (*e.containerPIDs)[uint32(pid)].Namespace)
+					} else {
+						newLabels = append(newLabels, mapValue.labels[i])
+					}
+				}
+				newMapValues = append(newMapValues, metricValue{
+					labels: newLabels,
+					value:  mapValue.value,
+				})
+			}
+			mapValues = newMapValues
 
 			aggregatedMapValues := aggregateMapValues(mapValues)
 
