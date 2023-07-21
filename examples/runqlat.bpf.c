@@ -12,7 +12,7 @@
 #define TASK_RUNNING 	0
 
 // 27 buckets for latency, max range is 33.6s .. 67.1s
-#define MAX_LATENCY_SLOT 20
+#define MAX_LATENCY_SLOT 22
 
 struct pid_latency_key_t {
     u32 pid;
