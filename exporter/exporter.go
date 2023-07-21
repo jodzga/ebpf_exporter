@@ -48,7 +48,6 @@ type Exporter struct {
 	decoders                 *decoder.Set
 	pidModules               []*libbpfgo.Module
 	containerPIDs            *map[uint32]DockerContainerName
-	nodeLabel                prometheus.Labels
 }
 
 // Pattern: /k8s_<container-name>_<pod-name>_<namespace>_<pod-uid>_<attempt>
@@ -61,72 +60,56 @@ type DockerContainerName struct {
 }
 
 // New creates a new exporter with the provided config
-func New(configs []config.Config, nodeLabel string) (*Exporter, error) {
-	exporter := Exporter{
-		configs:       configs,
-		modules:       map[string]*libbpfgo.Module{},
-		kaddrs:        map[string]uint64{},
-		attachedProgs: map[string]map[*libbpfgo.BPFProg]bool{},
-		descs:         map[string]map[string]*prometheus.Desc{},
-		decoders:      decoder.NewSet(),
-		containerPIDs: &map[uint32]DockerContainerName{},
-		nodeLabel:     prometheus.Labels{"node": nodeLabel},
-	}
-
-	exporter.enabledConfigsDesc = exporter.NewDesc(
+func New(configs []config.Config) (*Exporter, error) {
+	enabledConfigsDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(prometheusNamespace, "", "enabled_configs"),
 		"The set of enabled configs",
 		[]string{"name"},
 		nil,
 	)
 
-	exporter.programInfoDesc = exporter.NewDesc(
+	programInfoDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(prometheusNamespace, "", "ebpf_program_info"),
 		"Info about ebpf programs",
 		[]string{"config", "program", "tag", "id"},
 		nil,
 	)
 
-	exporter.programAttachedDesc = exporter.NewDesc(
+	programAttachedDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(prometheusNamespace, "", "ebpf_program_attached"),
 		"Whether a program is attached",
 		[]string{"id"},
 		nil,
 	)
 
-	exporter.programRunTimeDesc = exporter.NewDesc(
+	programRunTimeDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(prometheusNamespace, "", "ebpf_program_run_time_seconds"),
 		"How long has the program been executing",
 		[]string{"id"},
 		nil,
 	)
 
-	exporter.programRunCountDesc = exporter.NewDesc(
+	programRunCountDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(prometheusNamespace, "", "ebpf_program_run_count_total"),
 		"How many times has the program been executed",
 		[]string{"id"},
 		nil,
 	)
 
-	return &exporter, nil
-}
-
-func (e *Exporter) NewDesc(fqName, help string, variableLabels []string, constLabels prometheus.Labels) *prometheus.Desc {
-	// append the new label name to the variableLabels slice
-	allVariableLabels := append(variableLabels, "node")
-
-	// Create a new Desc with the updated labels
-	return prometheus.NewDesc(fqName, help, allVariableLabels, constLabels)
-}
-
-func (e *Exporter) MustNewConstHistogram(desc *prometheus.Desc, count uint64, sum float64, buckets map[float64]uint64, labelValues ...string) prometheus.Metric {
-	allLabelValues := append(labelValues, e.nodeLabel["node"])
-	return prometheus.MustNewConstHistogram(desc, count, sum, buckets, allLabelValues...)
-}
-
-func (e *Exporter) MustNewConstMetric(desc *prometheus.Desc, valueType prometheus.ValueType, value float64, labelValues ...string) prometheus.Metric {
-	allLabelValues := append(labelValues, e.nodeLabel["node"])
-	return prometheus.MustNewConstMetric(desc, valueType, value, allLabelValues...)
+	return &Exporter{
+		configs:             configs,
+		modules:             map[string]*libbpfgo.Module{},
+		kaddrs:              map[string]uint64{},
+		enabledConfigsDesc:  enabledConfigsDesc,
+		programInfoDesc:     programInfoDesc,
+		programAttachedDesc: programAttachedDesc,
+		programRunTimeDesc:  programRunTimeDesc,
+		programRunCountDesc: programRunCountDesc,
+		attachedProgs:       map[string]map[*libbpfgo.BPFProg]bool{},
+		descs:               map[string]map[string]*prometheus.Desc{},
+		decoders:            decoder.NewSet(),
+		containerPIDs:       &map[uint32]DockerContainerName{},
+	}, nil
 }
 
 // Attach injects eBPF into kernel and attaches necessary programs
@@ -354,7 +337,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 				labelNames = append(labelNames, label.Name)
 			}
 
-			e.descs[programName][name] = e.NewDesc(prometheus.BuildFQName(prometheusNamespace, "", name), help, labelNames, nil)
+			e.descs[programName][name] = prometheus.NewDesc(prometheus.BuildFQName(prometheusNamespace, "", name), help, labelNames, nil)
 		}
 
 		ch <- e.descs[programName][name]
@@ -387,7 +370,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 // Collect satisfies prometheus.Collector interface and sends all metrics
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	for _, cfg := range e.configs {
-		ch <- e.MustNewConstMetric(e.enabledConfigsDesc, prometheus.GaugeValue, 1, cfg.Name)
+		ch <- prometheus.MustNewConstMetric(e.enabledConfigsDesc, prometheus.GaugeValue, 1, cfg.Name)
 	}
 
 	for name, attachments := range e.attachedProgs {
@@ -399,22 +382,22 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 			id := strconv.Itoa(info.id)
 
-			ch <- e.MustNewConstMetric(e.programInfoDesc, prometheus.GaugeValue, 1, name, program.Name(), info.tag, id)
+			ch <- prometheus.MustNewConstMetric(e.programInfoDesc, prometheus.GaugeValue, 1, name, program.Name(), info.tag, id)
 
 			attachedValue := 0.0
 			if attached {
 				attachedValue = 1.0
 			}
 
-			ch <- e.MustNewConstMetric(e.programAttachedDesc, prometheus.GaugeValue, attachedValue, id)
+			ch <- prometheus.MustNewConstMetric(e.programAttachedDesc, prometheus.GaugeValue, attachedValue, id)
 
 			statsEnabled, err := bpfStatsEnabled()
 			if err != nil {
 				log.Printf("Error checking whether bpf stats are enabled: %v", err)
 			} else {
 				if statsEnabled {
-					ch <- e.MustNewConstMetric(e.programRunTimeDesc, prometheus.CounterValue, info.runTime.Seconds(), id)
-					ch <- e.MustNewConstMetric(e.programRunCountDesc, prometheus.CounterValue, float64(info.runCount), id)
+					ch <- prometheus.MustNewConstMetric(e.programRunTimeDesc, prometheus.CounterValue, info.runTime.Seconds(), id)
+					ch <- prometheus.MustNewConstMetric(e.programRunCountDesc, prometheus.CounterValue, float64(info.runCount), id)
 				}
 			}
 		}
@@ -447,7 +430,7 @@ func (e *Exporter) collectCounters(ch chan<- prometheus.Metric) {
 			desc := e.descs[cfg.Name][counter.Name]
 
 			for _, metricValue := range aggregatedMapValues {
-				ch <- e.MustNewConstMetric(desc, prometheus.CounterValue, metricValue.value, metricValue.labels...)
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, metricValue.value, metricValue.labels...)
 			}
 		}
 	}
@@ -513,7 +496,7 @@ func (e *Exporter) collectHistograms(ch chan<- prometheus.Metric) {
 					continue
 				}
 
-				ch <- e.MustNewConstHistogram(desc, count, sum, buckets, histogramSet.labels...)
+				ch <- prometheus.MustNewConstHistogram(desc, count, sum, buckets, histogramSet.labels...)
 			}
 		}
 	}
