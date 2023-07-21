@@ -8,10 +8,16 @@
 #include "maps.bpf.h"
 
 #define MAX_ENTRIES	10240
+#define MAX_PIDS	1024
 #define TASK_RUNNING 	0
 
 // 27 buckets for latency, max range is 33.6s .. 67.1s
 #define MAX_LATENCY_SLOT 26
+
+struct pid_latency_key_t {
+    u32 pid;
+    u64 slot;
+};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -21,17 +27,29 @@ struct {
 } start SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, MAX_LATENCY_SLOT + 1);
-    __type(key, u32);
+	.type = BPF_MAP_TYPE_HASH,
+	.key_size = sizeof(u32),
+	.value_size = sizeof(u32),
+	.max_entries = MAX_PIDS,
+} pid_map SEC("maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, (MAX_LATENCY_SLOT + 1) * 128);
+    __type(key, struct pid_latency_key_t);
     __type(value, u64);
 } runq_latency_seconds SEC(".maps");
+
 
 static int trace_enqueue(u32 tgid, u32 pid)
 {
 	u64 ts;
+	u64 *count;
 
 	if (!pid)
+		return 0;
+	count = bpf_map_lookup_elem(&pid_map, &tgid);
+	if (!count)
 		return 0;
 
 	ts = bpf_ktime_get_ns();
@@ -59,18 +77,23 @@ static __always_inline __s64 get_task_state(void *task)
 static int handle_switch(bool preempt, struct task_struct *prev, struct task_struct *next)
 {
 	u64 *tsp, slot;
-	u32 pid;
+	u32 pid, tgid;
 	s64 delta;
+	u64 *count;
+	struct pid_latency_key_t latency_key = {};
 
 	if (get_task_state(prev) == TASK_RUNNING)
 		trace_enqueue(BPF_CORE_READ(prev, tgid), BPF_CORE_READ(prev, pid));
 
 	pid = BPF_CORE_READ(next, pid);
+	tgid = BPF_CORE_READ(next, tgid);
 
 	tsp = bpf_map_lookup_elem(&start, &pid);
 	if (!tsp)
 		return 0;
-
+	count = bpf_map_lookup_elem(&pid_map, &tgid);
+	if (!count)
+		return 0;
 
 	delta = bpf_ktime_get_ns() - *tsp;
 	if (delta < 0)
@@ -81,10 +104,13 @@ static int handle_switch(bool preempt, struct task_struct *prev, struct task_str
 	if (slot >= MAX_LATENCY_SLOT)
 		slot = MAX_LATENCY_SLOT - 1;
 	
-    increment_map(&runq_latency_seconds, &slot, 1);
+	latency_key.slot = slot;
+	latency_key.pid = tgid;
 
-    slot = MAX_LATENCY_SLOT + 1;
-    increment_map(&runq_latency_seconds, &slot, delta);
+    increment_map(&runq_latency_seconds, &latency_key, 1);
+
+    latency_key.slot = MAX_LATENCY_SLOT + 1;
+    increment_map(&runq_latency_seconds, &latency_key, delta);
 
 cleanup:
 	bpf_map_delete_elem(&start, &pid);

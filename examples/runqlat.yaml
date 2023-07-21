@@ -8,7 +8,11 @@ metrics:
       bucket_max: 26
       bucket_multiplier: 0.000001 # microseconds to seconds
       labels:
-        - name: bucket
+        - name: pid
           size: 4
+          decoders:
+            - name: uint
+        - name: bucket
+          size: 8
           decoders:
             - name: uint

@@ -48,6 +48,7 @@ type Exporter struct {
 	decoders                 *decoder.Set
 	pidModules               []*libbpfgo.Module
 	containerPIDs            *map[uint32]DockerContainerName
+	prevContainerPIDs        *map[uint32]DockerContainerName
 }
 
 // Pattern: /k8s_<container-name>_<pod-name>_<namespace>_<pod-uid>_<attempt>
@@ -109,6 +110,7 @@ func New(configs []config.Config) (*Exporter, error) {
 		descs:               map[string]map[string]*prometheus.Desc{},
 		decoders:            decoder.NewSet(),
 		containerPIDs:       &map[uint32]DockerContainerName{},
+		prevContainerPIDs:   &map[uint32]DockerContainerName{},
 	}, nil
 }
 
@@ -176,7 +178,7 @@ func (e *Exporter) Attach() error {
 		if err != nil {
 			return fmt.Errorf("Cannot initialize docker client: %v", err)
 		}
-		go e.refreshPIDs(cli)
+		go e.refreshPIDs(cli, e.pidModules)
 	}
 
 	postAttachMark()
@@ -216,7 +218,7 @@ func extractDockerContainerName(name string) (DockerContainerName, error) {
 	}, nil
 }
 
-func (e *Exporter) refreshPIDs(cli *client.Client) {
+func (e *Exporter) refreshPIDs(cli *client.Client, pidModules []*libbpfgo.Module) {
 	log.Printf("Starting PID refresh loop")
 
 	// get list of running docker containers and print their info every 5 seconds
@@ -252,28 +254,50 @@ func (e *Exporter) refreshPIDs(cli *client.Client) {
 				newContainerPIDs[uint32(containerInfo.State.Pid)] = dockerContainerName
 			}
 		}
-		e.cleanupExpiredPIDs(*e.containerPIDs, newContainerPIDs)
-		e.handleNewPIDs(*e.containerPIDs, newContainerPIDs)
+		e.cleanupExpiredPIDs(*e.prevContainerPIDs, newContainerPIDs, pidModules)
+		e.handleNewPIDs(*e.containerPIDs, newContainerPIDs, pidModules)
+		*e.prevContainerPIDs = *e.containerPIDs
 		*e.containerPIDs = newContainerPIDs
-
 		time.Sleep(30 * time.Second)
 	}
 }
 
-func (e *Exporter) handleNewPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName) {
+func (e *Exporter) handleNewPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName, pidModules []*libbpfgo.Module) {
 	// print all PIDs that are in newPIDs but not in oldPIDs
 	for pid, dockerContainerName := range newPIDs {
 		if _, ok := oldPIDs[pid]; !ok {
 			log.Printf("New PID %d: %+v\n", pid, dockerContainerName)
+			for _, module := range pidModules {
+				// inject pids into bpf program
+				pidMap, err := module.GetMap("pid_map")
+				if err != nil {
+					log.Printf("Error retrieving pid_map: %v", err)
+				}
+				err = pidMap.Update(unsafe.Pointer(&pid), unsafe.Pointer(&pid))
+				if err != nil {
+					log.Printf("Error updating pid_map: %v", err)
+				}
+			}
 		}
 	}
 }
 
-func (e *Exporter) cleanupExpiredPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName) {
+func (e *Exporter) cleanupExpiredPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName, pidModules []*libbpfgo.Module) {
 	// print all PIDs that are in oldPIDs but not in newPIDs
 	for pid, dockerContainerName := range oldPIDs {
 		if _, ok := newPIDs[pid]; !ok {
 			log.Printf("Expired PID %d: %+v\n", pid, dockerContainerName)
+			for _, module := range pidModules {
+				// remove pids from bpf program
+				pidMap, err := module.GetMap("pid_map")
+				if err != nil {
+					log.Printf("Error retrieving pid_map: %v", err)
+				}
+				err = pidMap.DeleteKey(unsafe.Pointer(&pid))
+				if err != nil {
+					log.Printf("Error deleting pid_map: %v", err)
+				}
+			}
 		}
 	}
 }
