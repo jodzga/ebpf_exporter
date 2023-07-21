@@ -27,7 +27,7 @@ struct {
 } start SEC(".maps");
 
 struct {
-	__uint(type = BPF_MAP_TYPE_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_PIDS);
 	__type(key, u32);
 	__type(value, u32);
