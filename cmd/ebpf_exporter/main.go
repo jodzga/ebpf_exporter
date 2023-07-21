@@ -21,6 +21,7 @@ func main() {
 	debug := kingpin.Flag("debug", "Enable debug.").Bool()
 	listenAddress := kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":9435").String()
 	metricsPath := kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").String()
+	nodeLabel := kingpin.Flag("label.node", "Value for node label").Default("").String()
 	kingpin.Version(version.Print("ebpf_exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
@@ -92,7 +93,7 @@ func main() {
 	// 	}
 	// }
 
-	e, err := exporter.New(configs)
+	e, err := exporter.New(configs, *nodeLabel)
 	if err != nil {
 		log.Fatalf("Error creating exporter: %s", err)
 	}
