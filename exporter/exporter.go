@@ -47,6 +47,16 @@ type Exporter struct {
 	descs                    map[string]map[string]*prometheus.Desc
 	decoders                 *decoder.Set
 	pidModules               []*libbpfgo.Module
+	containerPIDs            *map[uint32]DockerContainerName
+}
+
+// Pattern: /k8s_<container-name>_<pod-name>_<namespace>_<pod-uid>_<attempt>
+type DockerContainerName struct {
+	ContainerName string
+	PodName       string
+	Namespace     string
+	PodUID        string
+	Attempt       string
 }
 
 // New creates a new exporter with the provided config
@@ -173,7 +183,41 @@ func (e *Exporter) Attach() error {
 	return nil
 }
 
+/*
+Example docker container names:
+/k8s_POD_ebpf-exporter-56f884bb48-4hwbp_ebpf-exporter_fc9dee48-8cc8-4c0d-bb78-fac9a48e5e42_0
+/k8s_ebpf-exporter_ebpf-exporter-56f884bb48-4hwbp_ebpf-exporter_fc9dee48-8cc8-4c0d-bb78-fac9a48e5e42_0
+
+Pattern: /k8s_<container-name>_<pod-name>_<namespace>_<pod-uid>_<attempt>
+*/
+func extractDockerContainerNameParts(name string) (string, string, string, string, string, error) {
+	parts := strings.Split(name, "_")
+	if len(parts) != 6 {
+		return "", "", "", "", "", fmt.Errorf("invalid name format")
+	}
+
+	// Skipping the first part "/k8s" hence index starts from 1
+	return parts[1], parts[2], parts[3], parts[4], parts[5], nil
+}
+
+func extractDockerContainerName(name string) (DockerContainerName, error) {
+	containerName, podName, namespace, podUID, attempt, err := extractDockerContainerNameParts(name)
+	if err != nil {
+		return DockerContainerName{}, err
+	}
+
+	return DockerContainerName{
+		ContainerName: containerName,
+		PodName:       podName,
+		Namespace:     namespace,
+		PodUID:        podUID,
+		Attempt:       attempt,
+	}, nil
+}
+
 func (e *Exporter) refreshPIDs(cli *client.Client) {
+	log.Printf("Starting PID refresh loop")
+
 	// get list of running docker containers and print their info every 5 seconds
 	for {
 		var containerInfos []types.ContainerJSON
@@ -189,19 +233,47 @@ func (e *Exporter) refreshPIDs(cli *client.Client) {
 			if err != nil {
 				log.Printf("Error getting container info: %v", err)
 			}
-			// log entire container info
-			log.Printf("Container info: %v", containerInfo)
 			if containerInfo.State.Running {
 				containerInfos = append(containerInfos, containerInfo)
 			}
 		}
-		log.Printf("Number of running containers: %d", len(containerInfos))
+
+		newContainerPIDs := map[uint32]DockerContainerName{}
 		// iterate over container infos
 		for _, containerInfo := range containerInfos {
-			// The PID is stored in the State.Pid field of the container details.
-			log.Printf("Name: %s, id: %s, PID: %d\n", containerInfo.Name, containerInfo.ID, containerInfo.State.Pid)
+			// skip containers with names starting with "/k8s_POD" because these are Pause containers
+			if !strings.HasPrefix(containerInfo.Name, "/k8s_POD") {
+				dockerContainerName, err := extractDockerContainerName(containerInfo.Name)
+				if err != nil {
+					log.Printf("Error extracting docker container name: %v", err)
+				}
+				// add container pid to map
+				newContainerPIDs[uint32(containerInfo.State.Pid)] = dockerContainerName
+			}
 		}
+		e.cleanupExpiredPIDs(*e.containerPIDs, newContainerPIDs)
+		e.handleNewPIDs(*e.containerPIDs, newContainerPIDs)
+		*e.containerPIDs = newContainerPIDs
+
 		time.Sleep(30 * time.Second)
+	}
+}
+
+func (e *Exporter) handleNewPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName) {
+	// print all PIDs that are in newPIDs but not in oldPIDs
+	for pid, dockerContainerName := range newPIDs {
+		if _, ok := oldPIDs[pid]; !ok {
+			log.Printf("New PID %d: %+v\n", pid, dockerContainerName)
+		}
+	}
+}
+
+func (e *Exporter) cleanupExpiredPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName) {
+	// print all PIDs that are in oldPIDs but not in newPIDs
+	for pid, dockerContainerName := range oldPIDs {
+		if _, ok := newPIDs[pid]; !ok {
+			log.Printf("Expired PID %d: %+v\n", pid, dockerContainerName)
+		}
 	}
 }
 
