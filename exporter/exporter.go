@@ -149,19 +149,6 @@ func (e *Exporter) Attach() error {
 
 		if cfg.SupportsContainers {
 			e.pidModules = append(e.pidModules, module)
-
-			// // inject pids into bpf program
-			// pidMap, err := module.GetMap("pid_map")
-			// if err != nil {
-			// 	return fmt.Errorf("error retrieving pid_map: %v", err)
-			// }
-			// for i, pid := range cfg.PIDs {
-			// 	index := uint32(i)
-			// 	err = pidMap.Update(unsafe.Pointer(&index), unsafe.Pointer(&pid))
-			// 	if err != nil {
-			// 		return fmt.Errorf("error updating pid_map: %v", err)
-			// 	}
-			// }
 		}
 
 		attachments, err := attachModule(module, cfg)
@@ -254,12 +241,51 @@ func (e *Exporter) refreshPIDs(cli *client.Client, pidModules []*libbpfgo.Module
 				newContainerPIDs[uint32(containerInfo.State.Pid)] = dockerContainerName
 			}
 		}
-		e.cleanupExpiredPIDs(*e.prevContainerPIDs, newContainerPIDs, pidModules)
+		e.cleanupHistogramMapEntires()
+		e.cleanupExpiredPIDs(*e.containerPIDs, newContainerPIDs, pidModules)
 		e.handleNewPIDs(*e.containerPIDs, newContainerPIDs, pidModules)
-		*e.prevContainerPIDs = *e.containerPIDs
 		*e.containerPIDs = newContainerPIDs
 		time.Sleep(30 * time.Second)
 	}
+}
+
+func (e *Exporter) cleanupHistogramMapEntires() {
+	for _, cfg := range e.configs {
+		if !cfg.SupportsContainers {
+			continue
+		}
+		for _, histogram := range cfg.Metrics.Histograms {
+			mapValues, err := e.mapValues(e.modules[cfg.Name], histogram.Name, histogram.Labels)
+			if err != nil {
+				log.Printf("Error getting map %q values for metric %q of config %q: %s", histogram.Name, histogram.Name, cfg.Name, err)
+				continue
+			}
+			for _, mapValue := range mapValues {
+				for i, label := range histogram.Labels {
+					if label.Name == "pid" {
+						// convert the mapValue.labels[i] to uint32
+						pid, err := strconv.ParseUint(mapValue.labels[i], 10, 32)
+						if err != nil {
+							log.Printf("Error converting pid to uint32: %v", err)
+							break
+						}
+						// check if pid is in prevContainerPIDs
+						if _, ok := (*e.prevContainerPIDs)[uint32(pid)]; ok {
+							// delete the mapValue from the map
+							m, err := e.modules[cfg.Name].GetMap(histogram.Name)
+							if err != nil {
+								log.Printf("failed to retrieve map %q: %v", histogram.Name, err)
+							}
+							log.Printf("Deleting histogram map value for PID %d: %+v", pid, mapValue)
+							m.DeleteKey(unsafe.Pointer(&mapValue.raw))
+						}
+					}
+				}
+			}
+		}
+	}
+	// clear prevContainerPIDs
+	e.prevContainerPIDs = &map[uint32]DockerContainerName{}
 }
 
 func (e *Exporter) handleNewPIDs(oldPIDs map[uint32]DockerContainerName, newPIDs map[uint32]DockerContainerName, pidModules []*libbpfgo.Module) {
@@ -287,6 +313,8 @@ func (e *Exporter) cleanupExpiredPIDs(oldPIDs map[uint32]DockerContainerName, ne
 	for pid, dockerContainerName := range oldPIDs {
 		if _, ok := newPIDs[pid]; !ok {
 			log.Printf("Expired PID %d: %+v\n", pid, dockerContainerName)
+			// add expired PID to prevContainerPIDs
+			(*e.prevContainerPIDs)[pid] = dockerContainerName
 			for _, module := range pidModules {
 				// remove pids from bpf program
 				pidMap, err := module.GetMap("pid_map")
