@@ -277,7 +277,7 @@ func (e *Exporter) cleanupHistogramMapEntires() {
 								log.Printf("failed to retrieve map %q: %v", histogram.Name, err)
 							}
 							log.Printf("Deleting histogram map value for PID %d: %+v", pid, mapValue)
-							m.DeleteKey(unsafe.Pointer(&mapValue.raw))
+							m.DeleteKey(unsafe.Pointer(&mapValue.raw[0]))
 						}
 					}
 				}
